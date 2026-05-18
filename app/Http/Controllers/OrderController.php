@@ -190,7 +190,7 @@ final class OrderController extends Controller
         // 1. Handle double-submissions / race conditions FIRST
         // If an order was JUST created (within 3s), they likely double-clicked and the first one succeeded.
         $recentOrder = \App\Models\Order::where('user_id', $user->id)
-            ->where('created_at', '>=', now()->subSeconds(3))
+            ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 3 SECOND'))
             ->latest()
             ->first();
             
