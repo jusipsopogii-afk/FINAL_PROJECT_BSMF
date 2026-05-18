@@ -187,7 +187,17 @@ final class OrderController extends Controller
     {
         $user = Auth::user();
         
-
+        // 1. Handle double-submissions / race conditions FIRST
+        // If an order was JUST created (within 30s), they likely double-clicked and the first one succeeded.
+        $recentOrder = \App\Models\Order::where('user_id', $user->id)
+            ->where('created_at', '>=', now()->subSeconds(30))
+            ->latest()
+            ->first();
+            
+        if ($recentOrder) {
+            return redirect()->route('orders.confirmation', $recentOrder->id)
+                ->with('success', 'FINISH LINE! Your acquisition was already processed successfully.');
+        }
 
         $request->validate([
             'otp' => 'required|string|size:6',
@@ -209,6 +219,7 @@ final class OrderController extends Controller
         }
         
         try {
+            DB::beginTransaction();
 
             $regions = \App\Services\ShippingService::getRegions();
             $selectedItemIds = session('selected_cart_items', []);
@@ -298,10 +309,13 @@ final class OrderController extends Controller
             session()->forget(['pending_order', 'coupon_code', 'selected_cart_items']);
 
             $order = \App\Models\Order::find($orderId);
+            
+            DB::commit();
 
             return redirect()->route('orders.confirmation', $orderId)->with('success', 'FINISH LINE! Order placed successfully. You can track your acquisition details below.');
 
         } catch (\Exception $e) {
+            DB::rollBack();
             return redirect()->route('checkout')->with('error', $e->getMessage());
         }
     }
