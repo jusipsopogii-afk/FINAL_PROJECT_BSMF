@@ -188,9 +188,9 @@ final class OrderController extends Controller
         $user = Auth::user();
         
         // 1. Handle double-submissions / race conditions FIRST
-        // If an order was JUST created (within 30s), they likely double-clicked and the first one succeeded.
+        // If an order was JUST created (within 3s), they likely double-clicked and the first one succeeded.
         $recentOrder = \App\Models\Order::where('user_id', $user->id)
-            ->where('created_at', '>=', now()->subSeconds(30))
+            ->where('created_at', '>=', now()->subSeconds(3))
             ->latest()
             ->first();
             
