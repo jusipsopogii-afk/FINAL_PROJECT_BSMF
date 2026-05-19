@@ -187,18 +187,6 @@ final class OrderController extends Controller
     {
         $user = Auth::user();
         
-        // 1. Handle double-submissions / race conditions FIRST
-        // If an order was JUST created (within 3s), they likely double-clicked and the first one succeeded.
-        $recentOrder = \App\Models\Order::where('user_id', $user->id)
-            ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 3 SECOND'))
-            ->latest()
-            ->first();
-            
-        if ($recentOrder) {
-            return redirect()->route('orders.confirmation', $recentOrder->id)
-                ->with('success', 'FINISH LINE! Your acquisition was already processed successfully.');
-        }
-
         $request->validate([
             'otp' => 'required|string|size:6',
         ]);
@@ -217,7 +205,7 @@ final class OrderController extends Controller
         if (!$cart || $cart->items->isEmpty()) {
             // Handle race conditions where double-click causes the second request to see an empty cart
             $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
-                ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 10 SECOND'))
+                ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 60 SECOND'))
                 ->latest()
                 ->first();
                 
@@ -331,7 +319,7 @@ final class OrderController extends Controller
             // Handle race conditions where a double-click caused the stored procedure to find an empty cart
             if (str_contains($e->getMessage(), 'Cart is empty')) {
                 $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
-                    ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 10 SECOND'))
+                    ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 60 SECOND'))
                     ->latest()
                     ->first();
                     
