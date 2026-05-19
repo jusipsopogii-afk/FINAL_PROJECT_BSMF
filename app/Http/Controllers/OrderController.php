@@ -192,11 +192,31 @@ final class OrderController extends Controller
         ]);
 
         if (!$user->otp || $user->otp !== $request->otp || now()->gt($user->otp_expires_at)) {
+            // Handle race condition: if they double clicked, OTP might be null because first request succeeded
+            $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
+                ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 60 SECOND'))
+                ->latest()
+                ->first();
+                
+            if ($justCreatedOrder) {
+                return redirect()->route('orders.confirmation', $justCreatedOrder->id)
+                    ->with('success', 'FINISH LINE! Your acquisition was processed successfully.');
+            }
             return back()->withErrors(['otp' => 'The provided code is invalid or has expired. The finish line is waiting.']);
         }
 
         $orderData = session('pending_order');
         if (!$orderData) {
+            // Handle race condition: if they double clicked, session might be cleared because first request succeeded
+            $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
+                ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 60 SECOND'))
+                ->latest()
+                ->first();
+                
+            if ($justCreatedOrder) {
+                return redirect()->route('orders.confirmation', $justCreatedOrder->id)
+                    ->with('success', 'FINISH LINE! Your acquisition was processed successfully.');
+            }
             return redirect()->route('checkout')->with('error', 'Your order session expired. Refuel and try again.');
         }
 
