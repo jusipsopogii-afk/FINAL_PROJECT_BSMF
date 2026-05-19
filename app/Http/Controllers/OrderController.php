@@ -187,125 +187,142 @@ final class OrderController extends Controller
     {
         $user = Auth::user();
         
-        // 1. Handle double-submissions
-        // We removed the aggressive time checks to allow pure transaction flow.
+        $lock = \Illuminate\Support\Facades\Cache::lock('checkout_'.$user->id, 10);
         
-        $request->validate([
-            'otp' => 'required|string|size:6',
-        ]);
-
-        if (!$user->otp || $user->otp !== $request->otp || now()->gt($user->otp_expires_at)) {
-            return back()->withErrors(['otp' => 'The provided code is invalid or has expired. The finish line is waiting.']);
+        if (!$lock->get()) {
+            // Double click detected. Wait a moment for the first request to finish inserting the order.
+            sleep(2);
+            $latestOrder = \App\Models\Order::where('user_id', $user->id)->latest()->first();
+            if ($latestOrder) {
+                return redirect()->route('orders.confirmation', $latestOrder->id)
+                    ->with('success', 'FINISH LINE! Order placed successfully.');
+            }
+            return redirect()->route('orders.index');
         }
-
-        $orderData = session('pending_order');
-        if (!$orderData) {
-            return redirect()->route('checkout')->with('error', 'Your order session expired. Refuel and try again.');
-        }
-
-        $cart = \App\Models\Cart::with('items.product')->where('user_id', $user->id)->first();
-        
-
         
         try {
-            DB::beginTransaction();
+            $request->validate([
+                'otp' => 'required|string|size:6',
+            ]);
 
-            $regions = \App\Services\ShippingService::getRegions();
-            $selectedItemIds = session('selected_cart_items', []);
-            $items = $cart->items->whereIn('id', $selectedItemIds);
+            if (!$user->otp || $user->otp !== $request->otp || now()->gt($user->otp_expires_at)) {
+                $lock->release();
+                return back()->withErrors(['otp' => 'The provided code is invalid or has expired. The finish line is waiting.']);
+            }
+
+            $orderData = session('pending_order');
+            if (!$orderData) {
+                $lock->release();
+                return redirect()->route('checkout')->with('error', 'Your order session expired. Refuel and try again.');
+            }
+
+            $cart = \App\Models\Cart::with('items.product')->where('user_id', $user->id)->first();
             
-            if ($items->isEmpty()) {
-                $items = $cart->items;
-                $selectedItemIds = $items->pluck('id')->toArray();
-            }
-
-            $subtotal = $items->sum(fn($item) => ($item->price_at_time ?? $item->product->price) * $item->quantity);
-            $discount = 0;
-            $couponCode = session('coupon_code');
-
-            if ($couponCode) {
-                $coupon = \App\Models\Coupon::where('coupon_code', $couponCode)->first();
-                if ($coupon && $coupon->isValid()) {
-                    if ($coupon->discount_type === \App\Models\Coupon::TYPE_PERCENTAGE) {
-                        $discount = $subtotal * ($coupon->discount_value / 100);
-                    } elseif ($coupon->discount_type === \App\Models\Coupon::TYPE_FIXED) {
-                        $discount = $coupon->discount_value;
-                    }
-                }
-            }
-
-            $region = $orderData['shipping_region'];
-            $city = $orderData['shipping_city'];
-            $distance = 0;
-            
-            if ($region === 'NCR') {
-                $distances = \App\Services\ShippingService::getMetroManilaDistances();
-                $distance = $distances[$city] ?? 0;
-            }
-            
-            $shipping = \App\Services\ShippingService::calculate($region, (float)$distance);
-
-            $fullAddress = $orderData['shipping_address'] . ", " . $city . ", " . ($regions[$region] ?? $region);
-
-            // Temporarily hide unselected items
-            $unselectedItems = [];
-            if (!empty($selectedItemIds)) {
-                $unselectedItems = DB::table('cart_items')
-                    ->where('cart_id', $cart->id)
-                    ->whereNotIn('id', $selectedItemIds)
-                    ->get()
-                    ->map(fn($item) => (array)$item)->toArray();
-
-                DB::table('cart_items')
-                    ->where('cart_id', $cart->id)
-                    ->whereNotIn('id', $selectedItemIds)
-                    ->delete();
-            }
-
             try {
-                DB::statement("SET @p_order_id = 0;");
-                DB::statement("CALL sp_ProcessOrder(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, @p_order_id)", [
-                    $user->id,
-                    $fullAddress,
-                    $orderData['payment_method'],
-                    $orderData['customer_name'],
-                    $orderData['customer_email'],
-                    $orderData['customer_phone'],
-                    $couponCode,
-                    $discount,
-                    $shipping,
-                    $orderData['notes'] ?? null,
-                    (int) isset($orderData['extra_packaging'])
-                ]);
+                DB::beginTransaction();
 
-                $result = DB::selectOne("SELECT @p_order_id as id");
-                $orderId = $result->id;
-            } finally {
-                if (!empty($unselectedItems)) {
-                    foreach ($unselectedItems as $item) {
-                        unset($item['id']); 
-                        DB::table('cart_items')->insert($item);
+                $regions = \App\Services\ShippingService::getRegions();
+                $selectedItemIds = session('selected_cart_items', []);
+                $items = $cart->items->whereIn('id', $selectedItemIds);
+                
+                if ($items->isEmpty()) {
+                    $items = $cart->items;
+                    $selectedItemIds = $items->pluck('id')->toArray();
+                }
+
+                $subtotal = $items->sum(fn($item) => ($item->price_at_time ?? $item->product->price) * $item->quantity);
+                $discount = 0;
+                $couponCode = session('coupon_code');
+
+                if ($couponCode) {
+                    $coupon = \App\Models\Coupon::where('coupon_code', $couponCode)->first();
+                    if ($coupon && $coupon->isValid()) {
+                        if ($coupon->discount_type === \App\Models\Coupon::TYPE_PERCENTAGE) {
+                            $discount = $subtotal * ($coupon->discount_value / 100);
+                        } elseif ($coupon->discount_type === \App\Models\Coupon::TYPE_FIXED) {
+                            $discount = $coupon->discount_value;
+                        }
                     }
                 }
+
+                $region = $orderData['shipping_region'];
+                $city = $orderData['shipping_city'];
+                $distance = 0;
+                
+                if ($region === 'NCR') {
+                    $distances = \App\Services\ShippingService::getMetroManilaDistances();
+                    $distance = $distances[$city] ?? 0;
+                }
+                
+                $shipping = \App\Services\ShippingService::calculate($region, (float)$distance);
+
+                $fullAddress = $orderData['shipping_address'] . ", " . $city . ", " . ($regions[$region] ?? $region);
+
+                // Temporarily hide unselected items
+                $unselectedItems = [];
+                if (!empty($selectedItemIds)) {
+                    $unselectedItems = DB::table('cart_items')
+                        ->where('cart_id', $cart->id)
+                        ->whereNotIn('id', $selectedItemIds)
+                        ->get()
+                        ->map(fn($item) => (array)$item)->toArray();
+
+                    DB::table('cart_items')
+                        ->where('cart_id', $cart->id)
+                        ->whereNotIn('id', $selectedItemIds)
+                        ->delete();
+                }
+
+                try {
+                    DB::statement("SET @p_order_id = 0;");
+                    DB::statement("CALL sp_ProcessOrder(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, @p_order_id)", [
+                        $user->id,
+                        $fullAddress,
+                        $orderData['payment_method'],
+                        $orderData['customer_name'],
+                        $orderData['customer_email'],
+                        $orderData['customer_phone'],
+                        $couponCode,
+                        $discount,
+                        $shipping,
+                        $orderData['notes'] ?? null,
+                        (int) isset($orderData['extra_packaging'])
+                    ]);
+
+                    $result = DB::selectOne("SELECT @p_order_id as id");
+                    $orderId = $result->id;
+                } finally {
+                    if (!empty($unselectedItems)) {
+                        foreach ($unselectedItems as $item) {
+                            unset($item['id']); 
+                            DB::table('cart_items')->insert($item);
+                        }
+                    }
+                }
+
+                if (!$orderId) {
+                    throw new \Exception("Order processing failed at database level.");
+                }
+
+                // Clear OTP and Session
+                $user->update(['otp' => null, 'otp_expires_at' => null]);
+                session()->forget(['pending_order', 'coupon_code', 'selected_cart_items']);
+
+                $order = \App\Models\Order::find($orderId);
+                
+                DB::commit();
+
+                $lock->release();
+                return redirect()->route('orders.confirmation', $orderId)->with('success', 'FINISH LINE! Order placed successfully. You can track your acquisition details below.');
+
+            } catch (\Exception $e) {
+                DB::rollBack();
+                $lock->release();
+                return redirect()->route('checkout')->with('error', $e->getMessage());
             }
-
-            if (!$orderId) {
-                throw new \Exception("Order processing failed at database level.");
-            }
-
-            // Clear OTP and Session
-            $user->update(['otp' => null, 'otp_expires_at' => null]);
-            session()->forget(['pending_order', 'coupon_code', 'selected_cart_items']);
-
-            $order = \App\Models\Order::find($orderId);
-            
-            DB::commit();
-
-            return redirect()->route('orders.confirmation', $orderId)->with('success', 'FINISH LINE! Order placed successfully. You can track your acquisition details below.');
-
         } catch (\Exception $e) {
-            DB::rollBack();
-            return redirect()->route('checkout')->with('error', $e->getMessage());
+            $lock->release();
+            return redirect()->route('checkout')->with('error', 'An unexpected error occurred.');
         }
     }
 
