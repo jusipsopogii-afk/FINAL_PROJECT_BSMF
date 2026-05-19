@@ -187,55 +187,25 @@ final class OrderController extends Controller
     {
         $user = Auth::user();
         
+        // 1. Handle double-submissions
+        // We removed the aggressive time checks to allow pure transaction flow.
+        
         $request->validate([
             'otp' => 'required|string|size:6',
         ]);
 
         if (!$user->otp || $user->otp !== $request->otp || now()->gt($user->otp_expires_at)) {
-            // Handle race condition: if they double clicked, OTP might be null because first request succeeded
-            $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
-
-                ->latest()
-                ->first();
-                
-            if ($justCreatedOrder) {
-                return redirect()->route('orders.confirmation', $justCreatedOrder->id)
-                    ->with('success', 'FINISH LINE! Your acquisition was processed successfully.');
-            }
             return back()->withErrors(['otp' => 'The provided code is invalid or has expired. The finish line is waiting.']);
         }
 
         $orderData = session('pending_order');
         if (!$orderData) {
-            // Handle race condition: if they double clicked, session might be cleared because first request succeeded
-            $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
-
-                ->latest()
-                ->first();
-                
-            if ($justCreatedOrder) {
-                return redirect()->route('orders.confirmation', $justCreatedOrder->id)
-                    ->with('success', 'FINISH LINE! Your acquisition was processed successfully.');
-            }
             return redirect()->route('checkout')->with('error', 'Your order session expired. Refuel and try again.');
         }
 
         $cart = \App\Models\Cart::with('items.product')->where('user_id', $user->id)->first();
         
-        if (!$cart || $cart->items->isEmpty()) {
-            // Handle race conditions where double-click causes the second request to see an empty cart
-            $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
 
-                ->latest()
-                ->first();
-                
-            if ($justCreatedOrder) {
-                return redirect()->route('orders.confirmation', $justCreatedOrder->id)
-                    ->with('success', 'FINISH LINE! Your acquisition was processed successfully.');
-            }
-
-            return redirect()->route('products.index')->with('error', 'Your cart is empty. Start your engines again.');
-        }
         
         try {
             DB::beginTransaction();
@@ -335,19 +305,6 @@ final class OrderController extends Controller
 
         } catch (\Exception $e) {
             DB::rollBack();
-
-            // Handle race conditions where a double-click caused the stored procedure to find an empty cart
-            if (str_contains($e->getMessage(), 'Cart is empty')) {
-                $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
-                    ->latest()
-                    ->first();
-                    
-                if ($justCreatedOrder) {
-                    return redirect()->route('orders.confirmation', $justCreatedOrder->id)
-                        ->with('success', 'FINISH LINE! Your acquisition was processed successfully.');
-                }
-            }
-
             return redirect()->route('checkout')->with('error', $e->getMessage());
         }
     }
