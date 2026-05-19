@@ -194,7 +194,7 @@ final class OrderController extends Controller
         if (!$user->otp || $user->otp !== $request->otp || now()->gt($user->otp_expires_at)) {
             // Handle race condition: if they double clicked, OTP might be null because first request succeeded
             $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
-                ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 5 MINUTE'))
+
                 ->latest()
                 ->first();
                 
@@ -209,7 +209,7 @@ final class OrderController extends Controller
         if (!$orderData) {
             // Handle race condition: if they double clicked, session might be cleared because first request succeeded
             $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
-                ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 5 MINUTE'))
+
                 ->latest()
                 ->first();
                 
@@ -225,7 +225,7 @@ final class OrderController extends Controller
         if (!$cart || $cart->items->isEmpty()) {
             // Handle race conditions where double-click causes the second request to see an empty cart
             $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
-                ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 5 MINUTE'))
+
                 ->latest()
                 ->first();
                 
@@ -339,7 +339,6 @@ final class OrderController extends Controller
             // Handle race conditions where a double-click caused the stored procedure to find an empty cart
             if (str_contains($e->getMessage(), 'Cart is empty')) {
                 $justCreatedOrder = \App\Models\Order::where('user_id', $user->id)
-                    ->where('created_at', '>=', \Illuminate\Support\Facades\DB::raw('NOW() - INTERVAL 60 SECOND'))
                     ->latest()
                     ->first();
                     
